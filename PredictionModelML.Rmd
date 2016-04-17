@@ -1,0 +1,158 @@
+---
+title: "Model Predicting Exercise Qualtity with Accelerometers"
+author: "Edwin St Catherine"
+date: "April 17, 2016"
+output: 
+  html_document: 
+    fig_caption: yes
+    keep_md: yes
+---
+
+#Background Information
+Using information from accelorometers on six young health participants who were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). The readings from these accelorometers were used to evaluate the quality of the exercise. These readings are considered the predictors to be used in developing a model to predict the quality of the exercises done. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har.
+
+#Synopsis
+This modelling exercise utilizes two datasets, a training and test set. These datasets were obtained from the study:
+*Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*
+
+In this report we will use various techniques in building machine learning algorithms for prediction of the quality of the exercises down. In the process of doing this we will demonstrate how our model is built, how we used cross-validation in the process of building the algorithms and compute out of sample errors showing the choices we have made. The final model choosen of the three presented (Decision Tree, Random Forest, Boosting) was a Random Forest Model which predicted exercise quality with a 99.43% level of accuracy.
+
+To begin the appropriate packages are loaded:
+```{r ,echo=TRUE,results='hide',message=FALSE, warning=FALSE}
+library(AppliedPredictiveModeling)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(randomForest)
+library(gbm)
+```
+
+##Source of Input Datasets
+The training data for this project were obtained from:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data was also available from:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Using these sources we loaded the data
+
+###Downloading and loading datasets
+The following commands can be used to download the datafiles download.file(url=url_training, destfile=raw_training, method="curl")
+download.file(url=url_testing, destfile=raw_testing, method="curl")
+We then import the data treating empty values as NA. Finally, a verification Verify that the column names (excluding classe and problem_id) are identical in the training and test set.
+```{r ,echo=TRUE,results='hide',message=FALSE, warning=FALSE}
+url_training <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+raw_training <- "pml-training.csv"
+url_testing <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+raw_testing <- "pml-testing.csv"
+training <- read.csv(raw_training, na.strings=c("NA",""), header=TRUE)
+colnames_train <- colnames(training)
+testing <- read.csv(raw_testing, na.strings=c("NA",""), header=TRUE)
+colnames_test <- colnames(testing)
+all.equal(colnames_train[1:length(colnames_train)-1], colnames_test[1:length(colnames_train)-1])
+```
+
+##Partitioning Training Dataset into Training and Testing sets
+We were provided with a large training set (19,622 entries) and a small testing set (20 entries). Instead of performing the algorithm on the entire training set the decision was to partition the given training set into two, the original/raw training data set using 60% for training, 40% for testing:
+```{r, echo=TRUE}
+inTrain <- createDataPartition(y=training$classe, p=0.6, list=FALSE)
+myTraining <- training[inTrain, ]; myTesting <- training[-inTrain, ]
+dim(myTraining); dim(myTesting)
+```
+
+##Preparation of dataset for Modelling
+This process involves a check for covariates that have virtually no variablility and these are removed from the dataset. In addition, NA columns and columns where NA consisted of more than 69% of the values in the column are also eliminated, in addition to other extraneous columns. It is also important to ensure that the myTraining, myTesting and the testing datasets contain exactly the same variable names.
+```{r, echo=TRUE}
+nzv <- nearZeroVar(myTraining, saveMetrics=TRUE)
+myTraining <- myTraining[,nzv$nzv==FALSE]
+
+nzv<- nearZeroVar(myTesting,saveMetrics=TRUE)
+myTesting <- myTesting[,nzv$nzv==FALSE]
+
+nonNAs <- function(x) {
+  as.vector(apply(x, 2, function(x) length(which(!is.na(x)))))
+}
+# Build vector of missing data or NA columns to drop.
+colcnts <- nonNAs(myTraining)
+drops <- c()
+for (cnt in 1:length(colcnts)) {
+  if (colcnts[cnt] < nrow(myTraining)) {
+    drops <- c(drops, colnames_train[cnt])
+  }
+}
+# Drop NA data and the first 7 columns as they're unnecessary for predicting.
+myTraining <- myTraining[,!(names(myTraining) %in% drops)]
+myTraining <- myTraining[,8:length(colnames(myTraining))]
+
+myTesting <- myTesting[,!(names(myTesting) %in% drops)]
+myTesting <- myTesting[,8:length(colnames(myTesting))]
+
+testing <- testing[,!(names(testing) %in% drops)]
+testing <- testing[,8:length(colnames(testing))]
+
+# Show remaining columns.
+colnames(myTraining)
+
+# Clean variables with more than 60% NA
+
+trainingV3 <- myTraining
+for(i in 1:length(myTraining)) {
+  if( sum( is.na( myTraining[, i] ) ) /nrow(myTraining) >= .7) {
+    for(j in 1:length(trainingV3)) {
+      if( length( grep(names(myTraining[i]), names(trainingV3)[j]) ) == 1)  {
+        trainingV3 <- trainingV3[ , -j]
+      }   
+    } 
+  }
+}
+
+# Set back to the original variable name
+myTraining <- trainingV3
+rm(trainingV3)
+
+## Transform the myTesting and testing data sets
+
+clean1 <- colnames(myTraining)
+clean2 <- colnames(myTraining[, -40])  # remove the classe column
+myTesting <- myTesting[clean1]         # allow only variables in myTesting that are also in myTraining
+testing <- testing[clean2]             # allow only variables in testing that are also in myTraining
+
+dim(myTesting)
+dim(testing)
+```
+
+## Building Model with Decision Trees using myTraining Data
+The first model is done on the myTraining data created using decision trees and then is cross validated on the myTesting dataset. Using the confusion matrix it is possible to compute statistics on accuracy levels. The model results are then ploted using fancyRpartPlot.
+```{r, echo=TRUE}
+set.seed(123)
+modFit1 <- rpart(classe ~ ., data=myTraining, method="class")
+fancyRpartPlot(modFit1)
+
+## Using training model modFit1 predict using myTesting
+predict1 <- predict(modFit1, myTesting, type = "class")
+conmatResults1 <- confusionMatrix(predict1, myTesting$classe)
+conmatResults1
+
+plot(conmatResults1$table, col = conmatResults1$byClass, main = paste("Decision Tree Confusion Matrix: Accuracy =", round(conmatResults1$overall['Accuracy'], 4)))
+```
+
+##Building Model with Random Forest using myTraining Data
+```{r, echo=TRUE}
+set.seed(123)
+modFit2 <- randomForest(classe ~ ., data=myTraining)
+## Using training model modFit2 predict using myTesting
+predict2 <- predict(modFit2, myTesting)
+conmatResults2 <- confusionMatrix(predict2, myTesting$classe)
+conmatResults2
+plot(modFit2)
+plot(conmatResults2$table, col = conmatResults2$byClass, main = paste("Random Forest Confusion Matrix: Accuracy =", round(conmatResults2$overall['Accuracy'], 4)))
+```
+
+##Predicting Results on the Test Data
+Random Forests gave an Accuracy in the myTesting dataset of 99.41%, which was more accurate that what I got from the Decision Trees or GBM. The expected out-of-sample error is 100-99.41 = 0.59%.
+```{r, echo=TRUE}
+prediction2 <- predict(modFit2, testing, type = "class")
+prediction2
+```
